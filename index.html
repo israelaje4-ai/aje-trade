@@ -10,7 +10,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Syne:wght@700;800&display=swap" rel="stylesheet"></noscript>
     
 
 <style>
@@ -1452,9 +1454,62 @@ input, select { font-family: var(--font-body); }
     margin: 8px 0;
 }
 
-/* pro mode extras */
-#pro-grid { display: none; }
-.pro-mode #pro-grid { display: grid; }
+/* GPU acceleration for smooth animations */
+.panel, .market-card, .mobile-nav, #main-header, .modal, .settings-drawer, .overlay {
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+}
+
+/* Fluid section transitions */
+.tab-section {
+    display: none;
+    animation: none;
+}
+.tab-section.active {
+    display: block;
+    animation: sectionIn 0.22s cubic-bezier(0.4,0,0.2,1);
+}
+@keyframes sectionIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Nav items - faster tap response */
+.nav-item {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    will-change: color;
+}
+.nav-item.active .nav-icon {
+    transform: translateY(-2px) scale(1.15);
+    transition: transform 0.18s cubic-bezier(0.34,1.56,0.64,1);
+}
+
+/* Smooth price number changes */
+.stat-val, .mc-price, .chart-price, .wl-price {
+    transition: color 0.3s ease;
+    will-change: contents;
+}
+
+/* Cards hover - instant on mobile */
+.market-card {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+/* Button tap feedback */
+button, .market-card, .wl-row, .lb-row {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+.execute-btn:active { transform: scale(0.98) !important; transition: transform 0.08s !important; }
+.modal-btn:active   { transform: scale(0.98) !important; transition: transform 0.08s !important; }
+
+/* Preload critical layout to avoid reflow */
+#market-cards { min-height: 80px; }
+.chart-canvas-wrap { contain: layout style; }
 </style>
 </head>
 <body>
@@ -2031,6 +2086,8 @@ function tickPrices() {
     updateChartPrice();
     updateOrderPreview();
     updatePortfolioHeader();
+    updateLivePositions();   // FIX: live P&L in portfolio tab
+    updateLiveWatchlist();   // FIX: live prices in watchlist
     checkAlerts();
 }
 
@@ -2079,11 +2136,13 @@ function init() {
         renderHistory();
     }
 
-    // start price ticker
-    STATE.priceInterval = setInterval(tickPrices, 1500);
+    // start price ticker — 2s interval, smooth on mobile
+    STATE.priceInterval = setInterval(() => {
+        requestAnimationFrame(tickPrices);
+    }, 2000);
 
     // order book update
-    setInterval(renderOrderBook, 3000);
+    setInterval(renderOrderBook, 4000);
 
     // portfolio chart
     renderPortfolioChart();
@@ -2851,6 +2910,66 @@ function updatePortfolioHeader() {
     document.getElementById('hdr-streak').textContent = '🔥 '+STATE.streak+'d';
 }
 
+// FIX: Live position P&L updates without full DOM rebuild
+function updateLivePositions() {
+    if (!STATE.user) return;
+    const entries = Object.entries(STATE.positions);
+    if (entries.length === 0) return;
+
+    // Update portfolio stats live
+    const equity = getTotalEquity();
+    const startCap = STATE.user.startingCapital;
+    const pnl = equity - startCap;
+    const pnlPct = ((pnl/startCap)*100).toFixed(2);
+    const statsEl = document.getElementById('port-stats');
+    if (statsEl && statsEl.children.length === 4) {
+        statsEl.children[0].querySelector('.pstat-val').textContent = '$'+fmt(equity);
+        const pnlStatEl = statsEl.children[2].querySelector('.pstat-val');
+        pnlStatEl.textContent = (pnl>=0?'+':'-') + '$'+fmt(Math.abs(pnl));
+        pnlStatEl.className = `pstat-val ${pnl>=0?'up':'down'}`;
+        const retEl = statsEl.children[3].querySelector('.pstat-val');
+        retEl.textContent = (pnl>=0?'+':'') + pnlPct + '%';
+        retEl.className = `pstat-val ${pnl>=0?'up':'down'}`;
+    }
+
+    // Update each position row in-place
+    entries.forEach(([sym, pos]) => {
+        const price = STATE.prices[sym] || pos.avgCost;
+        const mktVal = pos.qty * price;
+        const positionPnl = mktVal - pos.qty * pos.avgCost;
+        const positionPct = ((positionPnl/(pos.qty*pos.avgCost))*100).toFixed(2);
+        const isUp = positionPnl >= 0;
+
+        // Find row by symbol - use data attribute
+        const row = document.querySelector(`tr[data-sym="${sym}"]`);
+        if (row) {
+            row.cells[3].textContent = '$'+price.toFixed(2);
+            row.cells[4].textContent = (isUp?'+':'-') + '$' + fmt(Math.abs(positionPnl));
+            row.cells[4].className = isUp ? 'up' : 'down';
+            row.cells[5].textContent = (isUp?'+':'') + positionPct + '%';
+            row.cells[5].className = isUp ? 'up' : 'down';
+        }
+    });
+}
+
+// FIX: Live watchlist price updates
+function updateLiveWatchlist() {
+    STATE.watchlist.forEach(sym => {
+        const d = MARKET_DATA[sym] || {};
+        const price = STATE.prices[sym] || d.base || 0;
+        const change = d.base ? ((price - d.base)/d.base*100) : 0;
+        const isUp = change >= 0;
+
+        const priceEl = document.querySelector(`[data-wl-price="${sym}"]`);
+        const changeEl = document.querySelector(`[data-wl-change="${sym}"]`);
+        if (priceEl) priceEl.textContent = fmtPrice(price, d.type);
+        if (changeEl) {
+            changeEl.textContent = `${isUp?'▲':'▼'} ${Math.abs(change).toFixed(2)}%`;
+            changeEl.className = `wl-change ${isUp?'up':'down'}`;
+        }
+    });
+}
+
 function renderPortfolio() {
     if (!STATE.user) return;
     const equity = getTotalEquity();
@@ -2881,7 +3000,7 @@ function renderPortfolio() {
         const pnl = mktVal - pos.qty * pos.avgCost;
         const pnlPct = ((pnl/(pos.qty*pos.avgCost))*100).toFixed(2);
         return `
-        <tr>
+        <tr data-sym="${sym}">
             <td style="color:var(--gold);font-weight:700;">${sym}</td>
             <td>${pos.qty}</td>
             <td>$${pos.avgCost.toFixed(2)}</td>
@@ -3023,8 +3142,8 @@ function renderWatchlist() {
                 <div class="wl-name">${d.name||''}</div>
             </div>
             <div style="text-align:right;flex:1">
-                <div class="wl-price mono">${fmtPrice(price, d.type)}</div>
-                <div class="wl-change ${isUp?'up':'down'}">${isUp?'▲':'▼'} ${Math.abs(change).toFixed(2)}%</div>
+                <div class="wl-price mono" data-wl-price="${sym}">${fmtPrice(price, d.type)}</div>
+                <div class="wl-change ${isUp?'up':'down'}" data-wl-change="${sym}">${isUp?'▲':'▼'} ${Math.abs(change).toFixed(2)}%</div>
             </div>
             <button class="remove-wl" onclick="event.stopPropagation();removeFromWatchlist('${sym}')">×</button>
         </div>`;
@@ -3304,11 +3423,16 @@ function showSection(name) {
     if (nb) nb.classList.add('active');
 
     // refresh data for section
-    if (name === 'portfolio') { renderPortfolio(); renderPortfolioChart(); renderAchievements(); }
+    if (name === 'portfolio') {
+        renderPortfolio();
+        setTimeout(renderPortfolioChart, 50);
+        renderAchievements();
+    }
     if (name === 'history') renderHistory();
     if (name === 'watchlist') renderWatchlist();
     if (name === 'alerts') renderAlerts();
     if (name === 'leaderboard') { renderLeaderboard('global'); renderTournaments(); }
+    if (name === 'market') setTimeout(() => renderChart(STATE.currentSymbol), 50);
 }
 
 // ============================================================
