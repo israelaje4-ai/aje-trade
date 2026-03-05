@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
 
 <style>
 /* ============================================================
@@ -522,8 +522,10 @@ main {
     border-radius: 12px;
     position: relative;
     overflow: hidden;
+    width: 100%;
 }
 @media(min-width:768px) { .chart-canvas-wrap { height: 280px; } }
+.chart-canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
 
 .chart-controls {
     display: flex;
@@ -2499,7 +2501,7 @@ function selectSymbol(sym) {
 }
 
 // ============================================================
-// CHART
+// CHART — Pure Canvas (no library needed)
 // ============================================================
 const chartHistory = {};
 
@@ -2508,17 +2510,110 @@ function generateChartData(sym, tf) {
     if (chartHistory[key]) return chartHistory[key];
     const base = STATE.prices[sym] || MARKET_DATA[sym].base;
     const vol = MARKET_DATA[sym].vol;
-    const points = { '1H':60, '1D':390, '1W':126, '1M':120 }[tf] || 60;
-    const interval = { '1H':1, '1D':1, '1W':30, '1M':360 }[tf] || 1;
-    let price = base * (0.9 + Math.random()*0.1);
+    const points = { '1H':80, '1D':120, '1W':90, '1M':60 }[tf] || 80;
+    let price = base * (0.88 + Math.random()*0.08);
     const data = [];
-    const now = Date.now();
-    for (let i = points; i >= 0; i--) {
-        price = price * (1 + (Math.random()-0.48) * vol);
-        data.push({ x: new Date(now - i*interval*60000), y: parseFloat(price.toFixed(2)) });
+    for (let i = 0; i <= points; i++) {
+        price = Math.max(price * (1 + (Math.random()-0.47) * vol), 0.01);
+        data.push(parseFloat(price.toFixed(2)));
     }
+    // make last point match current price
+    data[data.length-1] = STATE.prices[sym] || base;
     chartHistory[key] = data;
     return data;
+}
+
+function drawPureChart(canvasId, data, isUp) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const wrap = canvas.parentElement;
+    const W = wrap.offsetWidth || 600;
+    const H = wrap.offsetHeight || 240;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const pad = { top:16, right:55, bottom:28, left:12 };
+    const chartW = W - pad.left - pad.right;
+    const chartH = H - pad.top - pad.bottom;
+
+    const min = Math.min(...data) * 0.999;
+    const max = Math.max(...data) * 1.001;
+    const range = max - min || 1;
+
+    const color = isUp ? '#10b981' : '#ef4444';
+    const colorFade = isUp ? 'rgba(16,185,129,' : 'rgba(239,68,68,';
+
+    // grid lines
+    ctx.setLineDash([2,4]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = pad.top + (chartH / 4) * i;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+        // y axis labels
+        const val = max - (range / 4) * i;
+        ctx.fillStyle = '#555';
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('$'+val.toFixed(val>999?0:2), W - pad.right + 4, y + 3);
+    }
+    ctx.setLineDash([]);
+
+    // compute points
+    const pts = data.map((v, i) => ({
+        x: pad.left + (i / (data.length - 1)) * chartW,
+        y: pad.top + chartH - ((v - min) / range) * chartH
+    }));
+
+    // gradient fill
+    const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + chartH);
+    grad.addColorStop(0, colorFade+'0.35)');
+    grad.addColorStop(0.7, colorFade+'0.08)');
+    grad.addColorStop(1, colorFade+'0)');
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+        const cp1x = (pts[i-1].x + pts[i].x) / 2;
+        ctx.bezierCurveTo(cp1x, pts[i-1].y, cp1x, pts[i].y, pts[i].x, pts[i].y);
+    }
+    ctx.lineTo(pts[pts.length-1].x, pad.top + chartH);
+    ctx.lineTo(pts[0].x, pad.top + chartH);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // line
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+        const cp1x = (pts[i-1].x + pts[i].x) / 2;
+        ctx.bezierCurveTo(cp1x, pts[i-1].y, cp1x, pts[i].y, pts[i].x, pts[i].y);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // current price dot
+    const last = pts[pts.length-1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 4, 0, Math.PI*2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 7, 0, Math.PI*2);
+    ctx.strokeStyle = colorFade+'0.4)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // hover tooltip
+    canvas._pts = pts;
+    canvas._data = data;
+    canvas._color = color;
+    canvas._min = min; canvas._max = max; canvas._range = range;
+    canvas._pad = pad; canvas._chartW = chartW; canvas._chartH = chartH;
 }
 
 function renderChart(sym) {
@@ -2537,68 +2632,22 @@ function renderChart(sym) {
 
     const tf = document.querySelector('.tf-btn.active')?.textContent || '1H';
     const data = generateChartData(sym, tf);
-    const vals = data.map(d=>d.y);
+    const vals = data;
     const open = vals[0], high = Math.max(...vals), low = Math.min(...vals);
     document.getElementById('co').textContent = fmtPrice(open, d.type);
     document.getElementById('ch').textContent = fmtPrice(high, d.type);
     document.getElementById('cl').textContent = fmtPrice(low, d.type);
     document.getElementById('cv').textContent = fmtVol();
 
-    const canvas = document.getElementById('mainChart');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const color = isUp ? '#10b981' : '#ef4444';
-    const grad = ctx.createLinearGradient(0,0,0,canvas.parentElement.offsetHeight||280);
-    grad.addColorStop(0, color+'50');
-    grad.addColorStop(1, color+'00');
-
-    if (STATE.chart) { STATE.chart.destroy(); }
-    STATE.chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            datasets: [{
-                data: data,
-                borderColor: color,
-                borderWidth: 2,
-                backgroundColor: grad,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 4,
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            interaction: { intersect: false, mode: 'index' },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: 'rgba(10,10,10,0.9)',
-                    borderColor: 'rgba(255,215,0,0.3)',
-                    borderWidth: 1,
-                    titleColor: '#999',
-                    bodyColor: '#fff',
-                    callbacks: {
-                        label: ctx => `  $${ctx.parsed.y.toFixed(2)}`
-                    }
-                }
-            },
-            scales: {
-                x: { type:'time', display:false },
-                y: {
-                    display: true,
-                    position: 'right',
-                    grid: { color:'rgba(255,255,255,0.04)' },
-                    ticks: { color:'#555', font:{size:10}, callback: v => '$'+v.toFixed(0) }
-                }
-            }
-        }
-    });
+    // Draw after a tiny delay to let layout settle
+    setTimeout(() => drawPureChart('mainChart', data, isUp), 30);
 }
 
 function setTF(tf, btn) {
     document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    // clear cached data for this tf so it regenerates
+    delete chartHistory[STATE.currentSymbol+'_'+tf];
     renderChart(STATE.currentSymbol);
 }
 
@@ -2616,13 +2665,13 @@ function updateChartPrice() {
         chEl.textContent = `${isUp?'+':''}${change.toFixed(2)}%`;
         chEl.className = `chart-change ${isUp?'up':'down'}`;
     }
-
-    // Update chart with new point
-    if (STATE.chart) {
-        const ds = STATE.chart.data.datasets[0];
-        ds.data.push({ x: new Date(), y: price });
-        if (ds.data.length > 200) ds.data.shift();
-        STATE.chart.update('none');
+    // push new price into chart history
+    const tf = document.querySelector('.tf-btn.active')?.textContent || '1H';
+    const key = sym+'_'+tf;
+    if (chartHistory[key]) {
+        chartHistory[key].push(price);
+        if (chartHistory[key].length > 150) chartHistory[key].shift();
+        drawPureChart('mainChart', chartHistory[key], isUp);
     }
 }
 
@@ -2857,44 +2906,77 @@ function closePosition(sym) {
 function renderPortfolioChart() {
     const canvas = document.getElementById('portfolioChart');
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
 
     const history = STATE.portfolioHistory.length > 1
         ? STATE.portfolioHistory
         : [{ date: new Date(Date.now()-86400000).toISOString(), value: STATE.user?.startingCapital || 100000 },
            { date: new Date().toISOString(), value: getTotalEquity() }];
 
-    const vals = history.map(h => h.value);
-    const isUp = vals[vals.length-1] >= vals[0];
-    const color = isUp ? '#10b981' : '#ef4444';
-    const grad = ctx.createLinearGradient(0,0,0,200);
-    grad.addColorStop(0, color+'40');
-    grad.addColorStop(1, color+'00');
+    const data = history.map(h => h.value);
+    const isUp = data[data.length-1] >= data[0];
 
-    if (STATE.portfolioChart) STATE.portfolioChart.destroy();
-    STATE.portfolioChart = new Chart(ctx, {
-        type:'line',
-        data: {
-            labels: history.map(h => new Date(h.date).toLocaleDateString()),
-            datasets: [{
-                data: vals,
-                borderColor: color,
-                borderWidth: 2,
-                backgroundColor: grad,
-                fill: true,
-                tension: 0.4,
-                pointRadius: 2,
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend:{ display:false } },
-            scales: {
-                x: { display:false },
-                y: { display:true, position:'right', ticks:{ color:'#555', font:{size:10}, callback: v=>'$'+v.toFixed(0) }, grid:{ color:'rgba(255,255,255,0.04)' } }
-            }
-        }
+    const wrap = canvas.parentElement;
+    const W = wrap.offsetWidth || 600;
+    const H = 200;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const pad = { top:12, right:60, bottom:20, left:12 };
+    const chartW = W - pad.left - pad.right;
+    const chartH = H - pad.top - pad.bottom;
+    const min = Math.min(...data) * 0.998;
+    const max = Math.max(...data) * 1.002;
+    const range = max - min || 1;
+    const color = isUp ? '#10b981' : '#ef4444';
+    const colorFade = isUp ? 'rgba(16,185,129,' : 'rgba(239,68,68,';
+
+    const pts = data.map((v, i) => ({
+        x: pad.left + (i / Math.max(data.length - 1, 1)) * chartW,
+        y: pad.top + chartH - ((v - min) / range) * chartH
+    }));
+
+    // y labels
+    ctx.fillStyle = '#555';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    for (let i = 0; i <= 3; i++) {
+        const val = max - (range/3)*i;
+        const y = pad.top + (chartH/3)*i;
+        ctx.setLineDash([2,4]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W-pad.right, y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText('$'+fmt(val), W-pad.right+4, y+3);
+    }
+
+    const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top+chartH);
+    grad.addColorStop(0, colorFade+'0.3)');
+    grad.addColorStop(1, colorFade+'0)');
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    pts.slice(1).forEach((p, i) => {
+        const cp = (pts[i].x + p.x)/2;
+        ctx.bezierCurveTo(cp, pts[i].y, cp, p.y, p.x, p.y);
     });
+    ctx.lineTo(pts[pts.length-1].x, pad.top+chartH);
+    ctx.lineTo(pts[0].x, pad.top+chartH);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    pts.slice(1).forEach((p, i) => {
+        const cp = (pts[i].x + p.x)/2;
+        ctx.bezierCurveTo(cp, pts[i].y, cp, p.y, p.x, p.y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
 }
 
 // ============================================================
@@ -3348,6 +3430,14 @@ function timeAgo(iso) {
 // START
 // ============================================================
 document.addEventListener('DOMContentLoaded', init);
+window.addEventListener('resize', () => {
+    renderChart(STATE.currentSymbol);
+    renderPortfolioChart();
+});
+// Also redraw on load in case fonts shifted layout
+window.addEventListener('load', () => {
+    setTimeout(() => renderChart(STATE.currentSymbol), 200);
+});
 </script>
 </body>
 </html>
